@@ -282,13 +282,16 @@ func (s *Statement) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err er
 
 	task.NodeName = hostname
 	if node, found := s.ssn.Nodes[hostname]; found {
+		klog.V(3).Infof("Before allocated Task <%v/%v> to Node <%v>: idle <%v>, used <%v>, releasing <%v>",
+			task.Namespace, task.Name, node.Name, node.Idle, node.Used, node.Releasing)
+
 		if err := node.AddTask(task); err != nil {
 			klog.Errorf("Failed to add task <%v/%v> to node <%v> when allocating in Session <%v>: %v",
 				task.Namespace, task.Name, hostname, s.ssn.UID, err)
 			errInfos = append(errInfos, err)
 		}
-		klog.V(3).Infof("After allocated Task <%v/%v> to Node <%v>: idle <%v>, used <%v>, releasing <%v>",
-			task.Namespace, task.Name, node.Name, node.Idle, node.Used, node.Releasing)
+		klog.V(3).Infof("After allocated Task <%v/%v> (%v) to Node <%v>: idle <%v>, used <%v>, releasing <%v>",
+			task.Namespace, task.Name, task.Resreq, node.Name, node.Idle, node.Used, node.Releasing)
 	} else {
 		err := fmt.Errorf("Failed to find Node <%s> in Session <%s> index when allocating.",
 			hostname, s.ssn.UID)

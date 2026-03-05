@@ -31,36 +31,14 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
-OS=$(shell uname -s | tr '[:upper:]' '[:lower:]')
+export OS=linux
 
 # Get OS architecture
-OSARCH=$(shell uname -m)
-ifeq ($(OSARCH),x86_64)
-GOARCH?=amd64
-else ifeq ($(OSARCH),x64)
-GOARCH?=amd64
-else ifeq ($(OSARCH),aarch64)
-GOARCH?=arm64
-else ifeq ($(OSARCH),aarch64_be)
-GOARCH?=arm64
-else ifeq ($(OSARCH),armv8b)
-GOARCH?=arm64
-else ifeq ($(OSARCH),armv8l)
-GOARCH?=arm64
-else ifeq ($(OSARCH),i386)
-GOARCH?=x86
-else ifeq ($(OSARCH),i686)
-GOARCH?=x86
-else ifeq ($(OSARCH),arm)
-GOARCH?=arm
-else
-GOARCH?=$(OSARCH)
-endif
+export GOOS=linux
+export GOARCH=amd64
 
 # Run `make images DOCKER_PLATFORMS="linux/amd64,linux/arm64" BUILDX_OUTPUT_TYPE=registry IMAGE_PREFIX=[yourregistry]` to push multi-platform
 DOCKER_PLATFORMS ?= "linux/${GOARCH}"
-
-GOOS ?= linux
 
 include Makefile.def
 

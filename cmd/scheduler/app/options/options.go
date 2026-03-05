@@ -58,6 +58,7 @@ type ServerOption struct {
 	CertData          []byte
 	KeyData           []byte
 	CaCertData        []byte
+	QueueSelector     []string
 	SchedulerNames    []string
 	SchedulerConf     string
 	SchedulePeriod    time.Duration
@@ -119,6 +120,7 @@ func (s *ServerOption) AddFlags(fs *pflag.FlagSet) {
 	fs.MarkDeprecated("lock-object-namespace", "This flag is deprecated and will be removed in a future release. Please use --leader-elect-resource-namespace instead.")
 	// volcano scheduler will ignore pods with scheduler names other than specified with the option
 	fs.StringArrayVar(&s.SchedulerNames, "scheduler-name", []string{defaultSchedulerName}, "vc-scheduler will handle pods whose .spec.SchedulerName is same as scheduler-name")
+	fs.StringArrayVar(&s.QueueSelector, "queue-selector", []string{}, "vc-scheduler will handle queue whose name is same as queue-selector")
 	fs.StringVar(&s.SchedulerConf, "scheduler-conf", "", "The absolute path of scheduler configuration file")
 	fs.DurationVar(&s.SchedulePeriod, "schedule-period", defaultSchedulerPeriod, "The period between each scheduling cycle")
 	fs.DurationVar(&s.ResyncPeriod, "resync-period", defaultResyncPeriod, "The default resync period for k8s native informer factory")

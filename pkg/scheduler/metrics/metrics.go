@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -148,7 +149,135 @@ var (
 			Help:      "Number of jobs could not be scheduled",
 		},
 	)
+
+	taskOperationResult = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "total_task_operation_result_count",
+			Help:      "Total task operation result count",
+		}, []string{"operation", "result"},
+	)
+
+	taskBindLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "task_bind_latency_milliseconds",
+			Help:      "Task bind latency in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(32, 2, 10),
+		})
+
+	eventCount = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "total_event_count",
+			Help:      "Total event count",
+		},
+	)
+
+	podObservedCount = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "pod_observed_count",
+			Help:      "Pod inform count",
+		},
+	)
+
+	podGroupUpdateLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "podgroup_update_latency_milliseconds",
+			Help:      "Task podgroup update latency in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(5, 2, 15),
+		},
+	)
+
+	podUpdateLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "pod_update_latency_milliseconds",
+			Help:      "Task pod update latency in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(5, 2, 15),
+		},
+	)
+
+	queueUpdateLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "queue_update_latency_milliseconds",
+			Help:      "Task queue update latency in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(5, 2, 15),
+		},
+	)
+
+	sessionOpenLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "session_open_latency_milliseconds",
+			Help:      "session open latency in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(5, 2, 15),
+		},
+	)
+
+	sessionCloseLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      "session_close_latency_milliseconds",
+			Help:      "session close latency in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(5, 2, 15),
+		},
+	)
 )
+
+func IncEventCount() {
+	eventCount.Inc()
+}
+
+func RegisterCacheTaskCountFunc(status string, function func() float64) {
+	promauto.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Subsystem: VolcanoSubSystemName,
+			Name:      fmt.Sprintf("task_%s_count", status),
+			Help:      fmt.Sprintf("Number of %s tasks in the cache", status),
+		}, function,
+	)
+}
+
+func RecordSessionOpenDuration(duration time.Duration) {
+	sessionOpenLatency.Observe(DurationInMilliseconds(duration))
+}
+
+func RecordSessionCloseDuration(duration time.Duration) {
+	sessionCloseLatency.Observe(DurationInMilliseconds(duration))
+}
+
+func IncPodObservedCount() {
+	podObservedCount.Inc()
+}
+
+func RecordPodUpdateDuration(duration time.Duration) {
+	podUpdateLatency.Observe(DurationInMilliseconds(duration))
+}
+
+func RecordPodGroupUpdateDuration(duration time.Duration) {
+	podGroupUpdateLatency.Observe(DurationInMilliseconds(duration))
+}
+
+func RecordQueueUpdateDuration(duration time.Duration) {
+	queueUpdateLatency.Observe(DurationInMilliseconds(duration))
+
+}
+
+func IncTaskOperationSuccess(operation string) {
+	taskOperationResult.WithLabelValues(operation, "success").Inc()
+}
+
+func IncTaskOperationErr(operation string) {
+	taskOperationResult.WithLabelValues(operation, "failed").Inc()
+}
+
+func UpdateTaskOperationDuration(duration time.Duration) {
+	taskBindLatency.Observe(DurationInMilliseconds(duration))
+}
 
 // InitKubeSchedulerRelatedMetrics is used to init metrics global variables in k8s.io/kubernetes/pkg/scheduler/metrics/metrics.go.
 // We don't use InitMetrics() to init all global variables because currently only "Goroutines" is required when calling kube-scheduler

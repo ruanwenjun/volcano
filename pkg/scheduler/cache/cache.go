@@ -41,7 +41,6 @@ import (
 	storagev1 "k8s.io/client-go/informers/storage/v1"
 	storagev1beta1 "k8s.io/client-go/informers/storage/v1beta1"
 	"k8s.io/client-go/kubernetes"
-	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
@@ -72,7 +71,6 @@ import (
 	schedulingapi "volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
 	"volcano.sh/volcano/pkg/scheduler/metrics/source"
-	commonutil "volcano.sh/volcano/pkg/util"
 )
 
 const (
@@ -94,18 +92,20 @@ func init() {
 }
 
 // New returns a Cache implementation.
-func New(config *rest.Config, schedulerNames []string, defaultQueue string, nodeSelectors []string, nodeWorkers uint32, ignoredProvisioners []string, resyncPeriod time.Duration) Cache {
-	return newSchedulerCache(config, schedulerNames, defaultQueue, nodeSelectors, nodeWorkers, ignoredProvisioners, resyncPeriod)
+func New(config *rest.Config, queueSelector map[string]bool, schedulerSelector map[string]bool, defaultQueue string, nodeSelectors []string, nodeWorkers uint32, ignoredProvisioners []string, resyncPeriod time.Duration) Cache {
+	return newSchedulerCache(config, queueSelector, schedulerSelector, defaultQueue, nodeSelectors, nodeWorkers, ignoredProvisioners, resyncPeriod)
 }
 
 // SchedulerCache cache for the kube batch
 type SchedulerCache struct {
 	sync.Mutex
 
-	kubeClient   kubernetes.Interface
-	restConfig   *rest.Config
-	vcClient     vcclient.Interface
-	defaultQueue string
+	kubeClient        kubernetes.Interface
+	restConfig        *rest.Config
+	vcClient          vcclient.Interface
+	defaultQueue      string
+	queueSelector     map[string]bool
+	schedulerSelector map[string]bool
 	// schedulerName is the name for volcano scheduler
 	schedulerNames     []string
 	nodeSelectorLabels map[string]sets.Empty
@@ -208,8 +208,10 @@ type DefaultBinder struct {
 // Bind will send bind request to api server
 func (db *DefaultBinder) Bind(kubeClient kubernetes.Interface, tasks []*schedulingapi.TaskInfo) map[schedulingapi.TaskID]string {
 	errMsg := make(map[schedulingapi.TaskID]string)
+	now := time.Now()
 	for _, task := range tasks {
 		p := task.Pod
+		klog.V(3).Infof("Begin to bind pod <%v/%v> to node %s", p.Namespace, p.Name, task.NodeName)
 		if err := db.kubeclient.CoreV1().Pods(p.Namespace).Bind(context.TODO(),
 			&v1.Binding{
 				ObjectMeta: metav1.ObjectMeta{Namespace: p.Namespace, Name: p.Name, UID: p.UID, Annotations: p.Annotations},
@@ -221,10 +223,14 @@ func (db *DefaultBinder) Bind(kubeClient kubernetes.Interface, tasks []*scheduli
 			metav1.CreateOptions{}); err != nil {
 			klog.Errorf("Failed to bind pod <%v/%v> to node %s : %#v", p.Namespace, p.Name, task.NodeName, err)
 			errMsg[task.UID] = err.Error()
+			metrics.IncTaskOperationErr("bind")
 		} else {
-			metrics.UpdateTaskScheduleDuration(metrics.Duration(p.CreationTimestamp.Time)) // update metrics as soon as pod is bind
+			klog.V(3).Infof("Success bind pod <%v/%v> to node %s", p.Namespace, p.Name, task.NodeName)
+			metrics.IncTaskOperationSuccess("bind")
+			//metrics.UpdateTaskScheduleDuration(metrics.Duration(p.CreationTimestamp.Time)) // update metrics as soon as pod is bind
 		}
 	}
+	metrics.UpdateTaskOperationDuration(metrics.Duration(now))
 
 	return errMsg
 }
@@ -304,8 +310,14 @@ func podConditionHaveUpdate(status *v1.PodStatus, condition *v1.PodCondition) bo
 		// We are adding new pod condition.
 		return true
 	}
-	// We are updating an existing condition, so we need to check if it has changed.
+	// 对于这种
+	//pod group is ready, 1 minAvailable, 7 Running, 86 Pending; Pending: 86 Unschedulable
+	// 我们不更新
 	if condition.Status == oldCondition.Status {
+		if strings.Contains(oldCondition.Message, "pod group is ready") && strings.Contains(condition.Message, "pod group is ready") {
+			return false
+		}
+		// We are updating an existing condition, so we need to check if it has changed.
 		lastTransitionTime = oldCondition.LastTransitionTime
 	}
 
@@ -325,11 +337,15 @@ func podNominatedNodeNameNeedUpdate(status *v1.PodStatus, nodeName string) bool 
 
 // UpdatePodStatus will Update pod status
 func (su *defaultStatusUpdater) UpdatePodStatus(pod *v1.Pod) (*v1.Pod, error) {
+	now := time.Now()
+	defer metrics.RecordPodUpdateDuration(metrics.Duration(now))
 	return su.kubeclient.CoreV1().Pods(pod.Namespace).UpdateStatus(context.TODO(), pod, metav1.UpdateOptions{})
 }
 
 // UpdatePodGroup will Update PodGroup
 func (su *defaultStatusUpdater) UpdatePodGroup(pg *schedulingapi.PodGroup) (*schedulingapi.PodGroup, error) {
+	now := time.Now()
+
 	podgroup := &vcv1beta1.PodGroup{}
 	if err := schedulingscheme.Scheme.Convert(&pg.PodGroup, podgroup, nil); err != nil {
 		klog.Errorf("Error while converting PodGroup to v1alpha1.PodGroup with error: %v", err)
@@ -347,7 +363,7 @@ func (su *defaultStatusUpdater) UpdatePodGroup(pg *schedulingapi.PodGroup) (*sch
 		klog.Errorf("Error while converting v1alpha.PodGroup to api.PodGroup with error: %v", err)
 		return nil, err
 	}
-
+	metrics.RecordPodGroupUpdateDuration(metrics.Duration(now))
 	return podGroupInfo, nil
 }
 
@@ -492,7 +508,7 @@ func newDefaultAndRootQueue(vcClient vcclient.Interface, defaultQueue string) {
 	}
 }
 
-func newSchedulerCache(config *rest.Config, schedulerNames []string, defaultQueue string, nodeSelectors []string, nodeWorkers uint32, ignoredProvisioners []string, resyncPeriod time.Duration) *SchedulerCache {
+func newSchedulerCache(config *rest.Config, queueSelector map[string]bool, schedulerSelector map[string]bool, defaultQueue string, nodeSelectors []string, nodeWorkers uint32, ignoredProvisioners []string, resyncPeriod time.Duration) *SchedulerCache {
 	kubeClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		panic(fmt.Sprintf("failed init kubeClient, with err: %v", err))
@@ -500,10 +516,6 @@ func newSchedulerCache(config *rest.Config, schedulerNames []string, defaultQueu
 	vcClient, err := vcclient.NewForConfig(config)
 	if err != nil {
 		panic(fmt.Sprintf("failed init vcClient, with err: %v", err))
-	}
-	eventClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panic(fmt.Sprintf("failed init eventClient, with err: %v", err))
 	}
 
 	// create default queue and root queue
@@ -528,7 +540,8 @@ func newSchedulerCache(config *rest.Config, schedulerNames []string, defaultQueu
 		vcClient:            vcClient,
 		restConfig:          config,
 		defaultQueue:        defaultQueue,
-		schedulerNames:      schedulerNames,
+		queueSelector:       queueSelector,
+		schedulerSelector:   schedulerSelector,
 		nodeSelectorLabels:  make(map[string]sets.Empty),
 		NamespaceCollection: make(map[string]*schedulingapi.NamespaceCollection),
 		CSINodesStatus:      make(map[string]*schedulingapi.CSINodeStatusInfo),
@@ -550,9 +563,7 @@ func newSchedulerCache(config *rest.Config, schedulerNames []string, defaultQueu
 		sc.updateNodeSelectors(nodeSelectors)
 	}
 	// Prepare event clients.
-	broadcaster := record.NewBroadcaster()
-	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: eventClient.CoreV1().Events("")})
-	sc.Recorder = broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: commonutil.GenerateComponentName(sc.schedulerNames)})
+	sc.Recorder = NewEventRecorderWrapper(config, sc.schedulerNames)
 
 	// set concurrency configuration when binding
 	sc.setBatchBindParallel()
@@ -611,20 +622,7 @@ func (sc *SchedulerCache) addEventHandler() {
 	sc.nodeInformer.Informer().AddEventHandler(
 		cache.FilteringResourceEventHandler{
 			FilterFunc: func(obj interface{}) bool {
-				switch t := obj.(type) {
-				case *v1.Node:
-					return true
-				case cache.DeletedFinalStateUnknown:
-					var ok bool
-					_, ok = t.Obj.(*v1.Node)
-					if !ok {
-						klog.Errorf("Cannot convert to *v1.Node: %v", t.Obj)
-						return false
-					}
-					return true
-				default:
-					return false
-				}
+				return ShouldAcceptNode(obj, sc.nodeSelectorLabels)
 			},
 			Handler: cache.ResourceEventHandlerFuncs{
 				AddFunc:    sc.AddNode,
@@ -663,27 +661,7 @@ func (sc *SchedulerCache) addEventHandler() {
 	sc.podInformer.Informer().AddEventHandler(
 		cache.FilteringResourceEventHandler{
 			FilterFunc: func(obj interface{}) bool {
-				switch v := obj.(type) {
-				case *v1.Pod:
-					if !responsibleForPod(v, sc.schedulerNames, sc.schedulerPodName, sc.c) {
-						if len(v.Spec.NodeName) == 0 {
-							return false
-						}
-						if !responsibleForNode(v.Spec.NodeName, sc.schedulerPodName, sc.c) {
-							return false
-						}
-					}
-					return true
-				case cache.DeletedFinalStateUnknown:
-					if _, ok := v.Obj.(*v1.Pod); ok {
-						// The carried object may be stale, always pass to clean up stale obj in event handlers.
-						return true
-					}
-					klog.Errorf("Cannot convert object %T to *v1.Pod", v.Obj)
-					return false
-				default:
-					return false
-				}
+				return ShouldAcceptPod(obj, sc.schedulerSelector)
 			},
 			Handler: cache.ResourceEventHandlerFuncs{
 				AddFunc:    sc.AddPod,
@@ -720,6 +698,11 @@ func (sc *SchedulerCache) addEventHandler() {
 				switch v := obj.(type) {
 				case *vcv1beta1.PodGroup:
 					pg = v
+					if _, ok := sc.queueSelector[pg.Spec.Queue]; ok {
+						return true
+					}
+					klog.V(4).Infof("Queue's names %v is not match to PodGroup %v/%v queue %v", sc.schedulerSelector, v.Namespace, v.Name, pg.Spec.Queue)
+					return false
 				case cache.DeletedFinalStateUnknown:
 					var ok bool
 					pg, ok = v.Obj.(*vcv1beta1.PodGroup)
@@ -727,11 +710,13 @@ func (sc *SchedulerCache) addEventHandler() {
 						klog.Errorf("Cannot convert to podgroup: %v", v.Obj)
 						return false
 					}
+					if _, ok := sc.queueSelector[pg.Spec.Queue]; ok {
+						return true
+					}
+					return false
 				default:
 					return false
 				}
-
-				return responsibleForPodGroup(pg, sc.schedulerPodName, sc.c)
 			},
 			Handler: cache.ResourceEventHandlerFuncs{
 				AddFunc:    sc.AddPodGroupV1beta1,
@@ -742,11 +727,17 @@ func (sc *SchedulerCache) addEventHandler() {
 
 	// create informer(v1beta1) for Queue information
 	sc.queueInformerV1beta1 = vcinformers.Scheduling().V1beta1().Queues()
-	sc.queueInformerV1beta1.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    sc.AddQueueV1beta1,
-		UpdateFunc: sc.UpdateQueueV1beta1,
-		DeleteFunc: sc.DeleteQueueV1beta1,
-	})
+	sc.queueInformerV1beta1.Informer().AddEventHandler(
+		cache.FilteringResourceEventHandler{
+			FilterFunc: func(obj interface{}) bool {
+				return ShouldAcceptQueue(obj, sc.queueSelector)
+			},
+			Handler: cache.ResourceEventHandlerFuncs{
+				AddFunc:    sc.AddQueueV1beta1,
+				UpdateFunc: sc.UpdateQueueV1beta1,
+				DeleteFunc: sc.DeleteQueueV1beta1,
+			},
+		})
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.ResourceTopology) {
 		sc.cpuInformer = vcinformers.Nodeinfo().V1alpha1().Numatopologies()
@@ -1585,6 +1576,8 @@ func (sc *SchedulerCache) updateJobAnnotations(job *schedulingapi.JobInfo) {
 
 // UpdateQueueStatus update the status of queue.
 func (sc *SchedulerCache) UpdateQueueStatus(queue *schedulingapi.QueueInfo) error {
+	now := time.Now()
+	defer metrics.RecordQueueUpdateDuration(metrics.Duration(now))
 	return sc.StatusUpdater.UpdateQueueStatus(queue)
 }
 

@@ -42,6 +42,7 @@ const (
 // 2. The Job which the Pod belongs is not assigned to current scheduler based on the hash algorithm in multi-schedulers scenario
 func responsibleForPod(pod *v1.Pod, schedulerNames []string, mySchedulerPodName string, c *consistent.Consistent) bool {
 	if !slices.Contains(schedulerNames, pod.Spec.SchedulerName) {
+		klog.V(4).Infof("Scheduler's names %v is not match to Pod %v/%v scheduler %v", schedulerNames, pod.Namespace, pod.Name, pod.Spec.SchedulerName)
 		return false
 	}
 	if c != nil {

@@ -72,7 +72,17 @@ func NewScheduler(config *rest.Config, opt *options.ServerOption) (*Scheduler, e
 		}
 	}
 
-	cache := schedcache.New(config, opt.SchedulerNames, opt.DefaultQueue, opt.NodeSelector, opt.NodeWorkerThreads, opt.IgnoredCSIProvisioners, opt.ResyncPeriod)
+	queueSelector := make(map[string]bool)
+	for _, queue := range opt.QueueSelector {
+		queueSelector[queue] = true
+	}
+
+	schedulerSelector := make(map[string]bool)
+	for _, scheduler := range opt.SchedulerNames {
+		schedulerSelector[scheduler] = true
+	}
+
+	cache := schedcache.New(config, queueSelector, schedulerSelector, opt.DefaultQueue, opt.NodeSelector, opt.NodeWorkerThreads, opt.IgnoredCSIProvisioners, opt.ResyncPeriod)
 	scheduler := &Scheduler{
 		schedulerConf:  opt.SchedulerConf,
 		fileWatcher:    watcher,
@@ -130,6 +140,18 @@ func (pc *Scheduler) runOnce() {
 		action.Execute(ssn)
 		metrics.UpdateActionDuration(action.Name(), metrics.Duration(actionStartTime))
 	}
+
+	var currentQueueNames []string
+	for _, queueInfo := range ssn.Queues {
+		currentQueueNames = append(currentQueueNames, queueInfo.Name)
+	}
+	klog.V(2).Infof("Current scheduler queues: %v", currentQueueNames)
+
+	klog.V(2).Infof("Current scheduler nodes: ")
+	for _, nodeInfo := range ssn.Nodes {
+		klog.V(2).Infof("Name: %v, Idle: %v, Used: %v, Allocatable: %v, Capacity: %v", nodeInfo.Name, nodeInfo.Idle, nodeInfo.Used, nodeInfo.Allocatable, nodeInfo.Capacity)
+	}
+
 }
 
 func (pc *Scheduler) loadSchedulerConf() {

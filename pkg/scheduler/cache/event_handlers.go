@@ -625,9 +625,10 @@ func (sc *SchedulerCache) SyncNode(nodeName string) error {
 		return err
 	}
 
-	if !sc.nodeCanAddCache(node) {
+	if !ShouldAcceptNode(node, sc.nodeSelectorLabels) {
 		return nil
 	}
+	klog.V(2).Infof("Watch k8s Node: %v, Allocatable: %v, Capacity: %v", node.Name, node.Status.Allocatable, node.Status.Capacity)
 	nodeCopy := node.DeepCopy()
 	csiNode, err := sc.csiNodeInformer.Lister().Get(nodeName)
 	if err == nil {
